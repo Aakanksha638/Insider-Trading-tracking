@@ -1,0 +1,11 @@
+[package]
+name = "signal-engine"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+tokio.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+anyhow.workspace = true

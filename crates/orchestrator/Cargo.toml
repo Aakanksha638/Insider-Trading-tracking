@@ -1,0 +1,19 @@
+[package]
+name = "orchestrator"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+ingest-sec = { path = "../ingest-sec" }
+ingest-market = { path = "../ingest-market" }
+signal-engine = { path = "../signal-engine" }
+executor = { path = "../executor" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+
+[[bin]]
+name = "orchestrator"
+path = "src/main.rs"

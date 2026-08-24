@@ -1,0 +1,14 @@
+[package]
+name = "ingest-sec"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+tokio.workspace = true
+reqwest.workspace = true
+quick-xml.workspace = true
+serde.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+anyhow.workspace = true

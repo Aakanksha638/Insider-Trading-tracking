@@ -1,0 +1,10 @@
+[package]
+name = "common"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+serde.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tokio.workspace = true

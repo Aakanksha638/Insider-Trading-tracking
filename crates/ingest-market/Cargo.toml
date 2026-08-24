@@ -1,0 +1,12 @@
+[package]
+name = "ingest-market"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+tokio.workspace = true
+tracing.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
