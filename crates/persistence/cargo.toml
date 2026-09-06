@@ -1,0 +1,13 @@
+[package]
+name = "persistence"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+sqlx.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+chrono.workspace = true

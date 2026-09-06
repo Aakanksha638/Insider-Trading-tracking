@@ -1,10 +1,10 @@
 use crate::form4::parse_form4;
 use chrono::Utc;
-use common::{EventSender, SystemEvent};
+use common::{EventSender, SeenStore, SystemEvent};
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 #[derive(Debug, Clone)]
 pub struct PollerConfig {
@@ -60,14 +60,19 @@ struct IndexItem {
     name: String,
 }
 
-/// Runs forever: poll the current-events feed, dedup, fetch + parse new
+/// Runs forever: poll the current-events feed, dedup via `seen` (pass an
+/// `Arc<InMemorySeenStore>` for a non-durable default, or a real
+/// `persistence::Store` so dedup survives restarts), fetch + parse new
 /// Form 4 filings, and push `InsiderFiling` events onto `tx`.
-pub async fn poll_loop(cfg: PollerConfig, tx: EventSender) -> anyhow::Result<()> {
+pub async fn poll_loop(
+    cfg: PollerConfig,
+    tx: EventSender,
+    seen: Arc<dyn SeenStore>,
+) -> anyhow::Result<()> {
     let client = reqwest::Client::builder()
         .user_agent(cfg.user_agent.clone())
         .build()?;
 
-    let mut seen: HashSet<String> = HashSet::new();
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(cfg.max_concurrent_fetches));
 
     loop {
@@ -79,8 +84,13 @@ pub async fn poll_loop(cfg: PollerConfig, tx: EventSender) -> anyhow::Result<()>
                     let Some(accession) = extract_accession(&href) else {
                         continue;
                     };
-                    if !seen.insert(accession.clone()) {
-                        continue;
+                    match seen.mark_seen_if_new(&accession).await {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(e) => {
+                            warn!(accession, error = %e, "seen-store check failed, skipping to be safe");
+                            continue;
+                        }
                     }
 
                     let client = client.clone();
@@ -100,13 +110,7 @@ pub async fn poll_loop(cfg: PollerConfig, tx: EventSender) -> anyhow::Result<()>
             Err(e) => error!(error = %e, "failed to fetch current-events feed"),
         }
 
-        debug!(elapsed_ms = %started.elapsed().as_millis(), seen_count = seen.len(), "poll cycle complete");
-
-        // Cap the seen-set so long-running processes don't grow unbounded.
-        if seen.len() > 50_000 {
-            seen.clear();
-            info!("cleared dedup cache after reaching cap");
-        }
+        debug!(elapsed_ms = %started.elapsed().as_millis(), "poll cycle complete");
 
         tokio::time::sleep(cfg.poll_interval).await;
     }
