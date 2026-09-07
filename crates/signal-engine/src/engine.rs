@@ -1,11 +1,12 @@
 use crate::state::{InsiderEvent, SymbolState};
 use chrono::Duration as ChronoDuration;
 use common::{
-    Direction, EventReceiver, EventSender, InsiderTx, Signal, SignalStrength, SystemEvent,
-    TransactionCode,
+    AuditSink, Direction, EventReceiver, EventSender, InsiderTx, Signal, SignalStrength,
+    SystemEvent, TransactionCode,
 };
 use std::collections::HashMap;
-use tracing::{debug, info};
+use std::sync::Arc;
+use tracing::{debug, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -31,8 +32,15 @@ impl Default for EngineConfig {
 
 /// Consumes InsiderFiling + Tick events from `rx`, maintains per-symbol
 /// state, and emits `SystemEvent::Signal` onto `out` whenever a filing
-/// clears the scoring bar.
-pub async fn run(cfg: EngineConfig, mut rx: EventReceiver, out: EventSender) -> anyhow::Result<()> {
+/// clears the scoring bar. Every filing considered and every signal
+/// emitted is recorded via `audit` when provided, giving a durable trail
+/// for tuning `EngineConfig` later even for filings that didn't fire.
+pub async fn run(
+    cfg: EngineConfig,
+    mut rx: EventReceiver,
+    out: EventSender,
+    audit: Option<Arc<dyn AuditSink>>,
+) -> anyhow::Result<()> {
     let mut symbols: HashMap<String, SymbolState> = HashMap::new();
 
     while let Some(event) = rx.recv().await {
@@ -41,8 +49,18 @@ pub async fn run(cfg: EngineConfig, mut rx: EventReceiver, out: EventSender) -> 
                 symbols.entry(tick.symbol.clone()).or_default().push_tick(tick);
             }
             SystemEvent::InsiderFiling(tx) => {
+                if let Some(sink) = &audit {
+                    if let Err(e) = sink.record_filing(&tx).await {
+                        warn!(error = %e, "failed to record filing in audit sink");
+                    }
+                }
                 if let Some(signal) = score_filing(&cfg, &mut symbols, &tx) {
                     info!(%signal, "emitting signal");
+                    if let Some(sink) = &audit {
+                        if let Err(e) = sink.record_signal(&signal).await {
+                            warn!(error = %e, "failed to record signal in audit sink");
+                        }
+                    }
                     if out.send(SystemEvent::Signal(signal)).await.is_err() {
                         break;
                     }

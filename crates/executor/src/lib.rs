@@ -4,8 +4,9 @@
 //! same `ExecutionSink` trait.
 
 use async_trait::async_trait;
-use common::{Direction, EventReceiver, Signal, SystemEvent};
+use common::{Direction, EventReceiver, PositionStore, Signal, SystemEvent};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{info, warn};
 
 #[async_trait]
@@ -16,11 +17,17 @@ pub trait ExecutionSink: Send + Sync {
 /// Tracks a virtual position per symbol. Real position sizing (e.g. sizing
 /// by signal strength, risk limits, max-position caps) belongs here once
 /// you're ready to move past "does the signal pipeline even work".
-#[derive(Debug, Default)]
+///
+/// When constructed with a `PositionStore` (`with_store`), the store is the
+/// source of truth for each position -- `execute` persists every delta and
+/// uses the store's returned total, so positions survive a restart instead
+/// of silently resetting to zero. Without a store, positions live only in
+/// the in-memory `positions` map for the life of the process.
 pub struct PaperExecutor {
     pub positions: HashMap<String, f64>,
     /// Fixed share size per signal for now -- replace with real sizing logic.
     pub default_size: f64,
+    store: Option<Arc<dyn PositionStore>>,
 }
 
 impl PaperExecutor {
@@ -28,7 +35,20 @@ impl PaperExecutor {
         Self {
             positions: HashMap::new(),
             default_size,
+            store: None,
         }
+    }
+
+    /// Load existing positions from `store` and persist all future changes
+    /// to it. Call this instead of `new` once you have a durable store.
+    pub async fn with_store(default_size: f64, store: Arc<dyn PositionStore>) -> anyhow::Result<Self> {
+        let positions = store.load_all().await?;
+        info!(count = positions.len(), "loaded positions from durable store");
+        Ok(Self {
+            positions,
+            default_size,
+            store: Some(store),
+        })
     }
 }
 
@@ -39,12 +59,23 @@ impl ExecutionSink for PaperExecutor {
             Direction::Buy => self.default_size,
             Direction::Sell => -self.default_size,
         };
-        let pos = self.positions.entry(signal.symbol.clone()).or_insert(0.0);
-        *pos += delta;
+
+        let new_position = if let Some(store) = &self.store {
+            // The store is authoritative: this survives concurrent updates
+            // and process restarts, unlike a purely in-memory counter.
+            let total = store.apply_delta(&signal.symbol, delta).await?;
+            self.positions.insert(signal.symbol.clone(), total);
+            total
+        } else {
+            let pos = self.positions.entry(signal.symbol.clone()).or_insert(0.0);
+            *pos += delta;
+            *pos
+        };
+
         info!(
             symbol = %signal.symbol,
             strength = ?signal.strength,
-            new_position = *pos,
+            new_position,
             "paper-executed signal"
         );
         Ok(())
